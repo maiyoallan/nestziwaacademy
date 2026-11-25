@@ -1,0 +1,25 @@
+:root{--theme-green:#15803D;--theme-sky:#0284C7;--theme-mint:#F0FDF4;--theme-sage:#DCFCE7;--theme-blue:#1D4ED8}
+.theme-school .sidebar{background:linear-gradient(165deg,var(--theme-green),color-mix(in srgb,var(--theme-green),#102e46 35%));color:#f4fbff}
+.theme-school .school-label{color:#d9f5ff}
+.theme-school .nav-item:hover,.theme-school .nav-item.selected{background:color-mix(in srgb,var(--theme-sky),#12354a 45%);color:#fff}
+.theme-school .nav-item.selected{box-shadow:inset 3px 0 var(--theme-sky)}
+.theme-school .sidebar-bottom{border-color:#ffffff40;color:#e0f5fc}
+.theme-school .primary-btn{background:var(--theme-green);color:white}
+.theme-school .primary-btn:hover{background:color-mix(in srgb,var(--theme-green),#123d2a 20%)}
+.theme-school .welcome{background:linear-gradient(115deg,var(--theme-green),var(--theme-sky))}
+.theme-school .module-icon{background:color-mix(in srgb,var(--theme-sky),white 86%);color:var(--theme-green)}
+.theme-school .module-card:hover{border-color:var(--theme-sky)}
+.theme-school .module-arrow,.theme-school .eyebrow,.theme-school .admission-number-hint b{color:var(--theme-green)}
+.theme-school .record-icon{background:color-mix(in srgb,var(--theme-sky),white 85%);color:var(--theme-green)}
+.theme-school .student-name{color:var(--theme-green)}
+.theme-school .status-pill{background:color-mix(in srgb,var(--theme-green),white 90%);color:var(--theme-green)}
+.theme-school .student-chart svg rect{fill:var(--theme-green)}
+.login-art{background:radial-gradient(circle at 80% 20%,var(--theme-sky),var(--theme-green) 62%,color-mix(in srgb,var(--theme-green),#152f3d 40%))}
+.login-brand span,.login-art h1 em{color:#dff6ff}
+.theme-settings-card{display:flex;align-items:center;justify-content:space-between;gap:22px;background:#fff;border:1px solid #dcecf1;border-radius:13px;padding:18px 20px;margin-bottom:15px}
+.theme-settings-card h2{font:800 16px Manrope;margin:5px 0}.theme-settings-card p{font-size:11px;color:#81768e;margin:0}
+.theme-save-message{display:block;color:var(--theme-green);font-size:11px;margin-top:8px}
+.theme-swatches{display:flex;align-items:center;gap:13px;flex-wrap:wrap}.theme-swatches label{display:flex;align-items:center;gap:8px;color:#51475c;font-size:11px;font-weight:700}.theme-swatches input{width:42px;height:36px;border:1px solid #dbe8ec;border-radius:7px;padding:2px;background:#fff;cursor:pointer}
+.report-card-studio{max-width:1180px;margin:auto}.report-card-controls,.report-recipient{display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap;margin-bottom:14px;padding:14px;background:#fff;border:1px solid #dcecf1;border-radius:12px}.report-card-controls label,.report-card-toolbar label,.report-recipient label{display:grid;gap:6px;color:#61576b;font-size:11px;font-weight:600}.report-card-controls label{flex:1;min-width:150px}.report-card-controls input,.report-card-controls select,.report-card-toolbar select,.report-recipient input{border:1px solid #dce5e8;border-radius:8px;padding:10px;background:#fff;color:#30263a;font-size:12px;min-width:0}.report-card-toolbar{display:flex;align-items:flex-end;gap:7px;flex-wrap:wrap;padding:10px;background:#f1f8fb;border:1px solid #dcecf1;border-radius:10px 10px 0 0}.report-card-toolbar label{min-width:220px}.report-recipient{border-radius:0 0 10px 10px;border-top:0;align-items:flex-end}.report-recipient label{flex:1;min-width:220px}.report-card-paper{min-height:600px;background:#fff;border:1px solid #dcecf1;box-shadow:0 8px 28px #16405912;padding:28px;outline:none}.report-card-paper:focus{border-color:var(--theme-sky)}.report-card-placeholder{min-height:500px;display:grid;place-content:center;text-align:center;color:#78909a;font-size:13px}.report-card-help{display:flex;align-items:center;gap:8px;color:#71848c;font-size:11px;margin:10px 2px}
+@media print{.report-card-toolbar,.report-card-controls,.report-recipient,.report-card-help,.page-head{display:none!important}.report-card-paper{border:0;box-shadow:none;padding:0}}
+@media(max-width:760px){.theme-settings-card{align-items:flex-start;flex-direction:column}.theme-swatches{align-items:flex-start}.report-card-paper{padding:14px;min-height:420px}}
