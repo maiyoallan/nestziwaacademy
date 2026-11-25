@@ -17,9 +17,8 @@ router.post('/drafts', async (req,res)=>{
  const parsed=schema.safeParse(req.body);if(!parsed.success)return res.status(400).json({message:'A report card title and content are required.'});
  const html=clean(parsed.data.html);const data={Title:parsed.data.title,'Report Card HTML':html,Status:'DRAFT'};
  let row;
- if(parsed.data.id){row=await prisma.moduleRecord.findFirst({where:{id:parsed.data.id,module:'communications'}});if(!row?.data?.['Report Card HTML'])return res.status(404).json({message:'Report card draft not found.'});row=await prisma.moduleRecord.update({where:{id:row.id},data:{title:`REPORT CARD: ${parsed.data.title}`,data}});}
- else row=await prisma.moduleRecord.create({data:{module:'communications',title:`REPORT CARD: ${parsed.data.title}`,data,createdById:req.user.id}});
- await prisma.auditLog.create({data:{userId:req.user.id,action:parsed.data.id?'UPDATE':'CREATE',entity:'Report Card',entityId:row.id}});
+ if(parsed.data.id){row=await prisma.moduleRecord.findFirst({where:{id:parsed.data.id,module:'communications'}});if(!row?.data?.['Report Card HTML'])return res.status(404).json({message:'Report card draft not found.'});row=await prisma.$transaction(async(tx)=>{const saved=await tx.moduleRecord.update({where:{id:row.id},data:{title:`REPORT CARD: ${parsed.data.title}`,data}});await tx.auditLog.create({data:{userId:req.user.id,action:'UPDATE',entity:'Report Card',entityId:saved.id}});return saved;});}
+ else row=await prisma.$transaction(async(tx)=>{const created=await tx.moduleRecord.create({data:{module:'communications',title:`REPORT CARD: ${parsed.data.title}`,data,createdById:req.user.id}});await tx.auditLog.create({data:{userId:req.user.id,action:'CREATE',entity:'Report Card',entityId:created.id}});return created;});
  res.json({draft:{id:row.id,title:row.data.Title,html:row.data['Report Card HTML'],updatedAt:row.updatedAt}});
 });
 router.post('/send', async (req,res)=>{

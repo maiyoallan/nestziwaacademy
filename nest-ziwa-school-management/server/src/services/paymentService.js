@@ -16,9 +16,9 @@ export function normalizeChannel(value='') {
 function money(value){return Math.round((Number(value)||0)*100)/100;}
 function fingerprint(data){return createHash('sha256').update(JSON.stringify(data)).digest('hex');}
 
-export async function notifyPaymentConcern({schoolId,paymentId,channel,transactionCode,reason,createdById,title='Payment needs administration follow-up'}) {
-  const concern=await prisma.paymentConcern.create({data:{schoolId,paymentId:paymentId||null,channel:channel||null,transactionCode:transactionCode||null,reason,createdById}});
-  await prisma.notification.createMany({data:ADMIN_FOLLOWUP_ROLES.map(targetRole=>({targetRole,severity:'HIGH',title,message:reason,entity:'PaymentConcern',entityId:concern.id}))});
+export async function notifyPaymentConcern({db=prisma,schoolId,paymentId,channel,transactionCode,reason,createdById,title='Payment needs administration follow-up'}) {
+  const concern=await db.paymentConcern.create({data:{schoolId,paymentId:paymentId||null,channel:channel||null,transactionCode:transactionCode||null,reason,createdById}});
+  await db.notification.createMany({data:ADMIN_FOLLOWUP_ROLES.map(targetRole=>({targetRole,severity:'HIGH',title,message:reason,entity:'PaymentConcern',entityId:concern.id}))});
   return concern;
 }
 
@@ -79,7 +79,7 @@ export async function createStagedPayment({school,userId,input,recordTitle='STUD
   const replay=await prisma.paymentTransaction.findUnique({where:{idempotencyKey}});
   if(replay){
     if(replay.requestFingerprint!==requestFingerprint){
-      const concern=await notifyPaymentConcern({schoolId:school.id,paymentId:replay.id,channel,transactionCode,reason:'An idempotency key was reused with different payment details. Review both submissions.',createdById:userId,title:'Payment submission collision'});
+      const concern=await prisma.$transaction(async tx=>{const created=await notifyPaymentConcern({db:tx,schoolId:school.id,paymentId:replay.id,channel,transactionCode,reason:'An idempotency key was reused with different payment details. Review both submissions.',createdById:userId,title:'Payment submission collision'});await tx.auditLog.create({data:{userId,action:'FLAG_PAYMENT_SUBMISSION_COLLISION',entity:'PaymentTransaction',entityId:replay.id,details:{channel,transactionCode,concernId:created.id}}});return created;});
       return {conflict:true,payment:replay,concern};
     }
     return {idempotent:true,payment:replay};
@@ -88,12 +88,13 @@ export async function createStagedPayment({school,userId,input,recordTitle='STUD
   if(transactionCode){
     const duplicate=await prisma.paymentTransaction.findFirst({where:{schoolId:school.id,channel,transactionCode}});
     if(duplicate){
-      const concern=await notifyPaymentConcern({schoolId:school.id,paymentId:duplicate.id,channel,transactionCode,reason:`Transaction code ${transactionCode} already exists for ${channel}. Keep this submission unposted and verify the original receipt.`,createdById:userId,title:'Duplicate payment transaction code'});
+      const concern=await prisma.$transaction(async tx=>{const created=await notifyPaymentConcern({db:tx,schoolId:school.id,paymentId:duplicate.id,channel,transactionCode,reason:`Transaction code ${transactionCode} already exists for ${channel}. Keep this submission unposted and verify the original receipt.`,createdById:userId,title:'Duplicate payment transaction code'});await tx.auditLog.create({data:{userId,action:'FLAG_PAYMENT_REFERENCE_COLLISION',entity:'PaymentTransaction',entityId:duplicate.id,details:{channel,transactionCode,concernId:created.id}}});return created;});
       return {conflict:true,payment:duplicate,concern};
     }
   }
 
-  const payment=await prisma.$transaction(async tx=>{
+  try {
+  const result=await prisma.$transaction(async tx=>{
     const created=await tx.paymentTransaction.create({data:{
       schoolId:school.id,studentRecordId:student.id,createdById:userId,channel,transactionCode,idempotencyKey,requestFingerprint,
       admissionNumber,className,allocation,amount,cashAmount,cashbook:input.cashbook,item,quantity:Number.isFinite(quantity)&&quantity>0?quantity:null,
@@ -112,9 +113,20 @@ export async function createStagedPayment({school,userId,input,recordTitle='STUD
       'Payment explanation':explanation
     };
     const paymentRecord=await tx.moduleRecord.create({data:{module:'payments',title:recordTitle.toUpperCase(),data:paymentData,createdById:userId}});
-    return tx.paymentTransaction.update({where:{id:created.id},data:{paymentRecordId:paymentRecord.id}});
+    const saved=await tx.paymentTransaction.update({where:{id:created.id},data:{paymentRecordId:paymentRecord.id}});
+    const concern=await notifyPaymentConcern({db:tx,schoolId:school.id,paymentId:saved.id,channel,transactionCode,reason:concernText,createdById:userId,title:status==='CONCERN'?'Payment concern requires follow-up':'Payment awaiting verification'});
+    await tx.auditLog.create({data:{userId,action:'RECORD_STUDENT_PAYMENT',entity:'PaymentTransaction',entityId:saved.id,details:{channel,status,admissionNumber,transactionCode,amount,inKindItem:item,concernId:concern.id}}});
+    return {payment:saved,concern};
   });
-  const concern=await notifyPaymentConcern({schoolId:school.id,paymentId:payment.id,channel,transactionCode,reason:concernText,createdById:userId,title:status==='CONCERN'?'Payment concern requires follow-up':'Payment awaiting verification'});
-  await prisma.auditLog.create({data:{userId,action:'RECORD_STUDENT_PAYMENT',entity:'PaymentTransaction',entityId:payment.id,details:{channel,status,admissionNumber,transactionCode,amount,inKindItem:item}}});
-  return {payment,concern};
+  return result;
+  } catch (error) {
+    if (error.code === 'P2002') {
+      const raced = transactionCode ? await prisma.paymentTransaction.findFirst({where:{schoolId:school.id,channel,transactionCode}}) : await prisma.paymentTransaction.findUnique({where:{idempotencyKey}});
+      if (raced) {
+        const concern=await prisma.$transaction(async tx=>{const created=await notifyPaymentConcern({db:tx,schoolId:school.id,paymentId:raced.id,channel,transactionCode,reason:`A concurrent submission reused payment reference ${transactionCode||idempotencyKey}. It was stopped before posting; verify the original entry.`,createdById:userId,title:'Concurrent payment collision'});await tx.auditLog.create({data:{userId,action:'FLAG_PAYMENT_CONCURRENT_COLLISION',entity:'PaymentTransaction',entityId:raced.id,details:{channel,transactionCode,concernId:created.id}}});return created;});
+        return {conflict:true,payment:raced,concern};
+      }
+    }
+    throw error;
+  }
 }

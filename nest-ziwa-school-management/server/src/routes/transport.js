@@ -49,8 +49,11 @@ router.post('/routes', async (req, res) => {
   const parsed = z.object({ name: z.string().trim().min(2).max(100), description: z.string().trim().max(250).optional(), fee: z.number().nonnegative().optional() }).safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: 'Enter a route name and optional fee.' });
   try {
-    const route = await prisma.transportRoute.create({ data: { name: parsed.data.name.toUpperCase(), description: parsed.data.description || null, fee: parsed.data.fee === undefined ? null : new Prisma.Decimal(parsed.data.fee) } });
-    await prisma.auditLog.create({ data: { userId: req.user.id, action: 'CREATE_TRANSPORT_ROUTE', entity: 'TransportRoute', entityId: route.id } });
+    const route = await prisma.$transaction(async (tx) => {
+      const saved = await tx.transportRoute.create({ data: { name: parsed.data.name.toUpperCase(), description: parsed.data.description || null, fee: parsed.data.fee === undefined ? null : new Prisma.Decimal(parsed.data.fee) } });
+      await tx.auditLog.create({ data: { userId: req.user.id, action: 'CREATE_TRANSPORT_ROUTE', entity: 'TransportRoute', entityId: saved.id } });
+      return saved;
+    });
     res.status(201).json({ route });
   } catch { res.status(409).json({ message: 'That route could not be created.' }); }
 });
@@ -62,8 +65,11 @@ router.post('/vehicles', async (req, res) => {
   try {
     const school = await schoolFor(req);
     if (parsed.data.routeId && !await prisma.transportRoute.findUnique({ where: { id: parsed.data.routeId } })) return res.status(400).json({ message: 'Choose a valid transport route.' });
-    const vehicle = await prisma.vehicle.create({ data: { schoolId: school.id, name: parsed.data.name.toUpperCase(), registrationNo: parsed.data.registrationNo.toUpperCase(), make: parsed.data.make || null, vehicleClass: parsed.data.vehicleClass, capacity: parsed.data.capacity || null, routeId: parsed.data.routeId || null } });
-    await prisma.auditLog.create({ data: { userId: req.user.id, action: 'CREATE_TRANSPORT_VEHICLE', entity: 'Vehicle', entityId: vehicle.id, details: { name: vehicle.name, vehicleClass: vehicle.vehicleClass } } });
+    const vehicle = await prisma.$transaction(async (tx) => {
+      const saved = await tx.vehicle.create({ data: { schoolId: school.id, name: parsed.data.name.toUpperCase(), registrationNo: parsed.data.registrationNo.toUpperCase(), make: parsed.data.make || null, vehicleClass: parsed.data.vehicleClass, capacity: parsed.data.capacity || null, routeId: parsed.data.routeId || null } });
+      await tx.auditLog.create({ data: { userId: req.user.id, action: 'CREATE_TRANSPORT_VEHICLE', entity: 'Vehicle', entityId: saved.id, details: { name: saved.name, vehicleClass: saved.vehicleClass } } });
+      return saved;
+    });
     res.status(201).json({ vehicle });
   } catch (error) { res.status(error.code === 'P2002' ? 409 : error.status || 500).json({ message: error.code === 'P2002' ? 'That vehicle registration is already in use.' : error.message || 'Vehicle could not be created.' }); }
 });
@@ -92,13 +98,14 @@ router.post('/assignments', async (req, res) => {
       }
       const route = parsed.data.routeId ? await tx.transportRoute.findUnique({ where: { id: parsed.data.routeId } }) : null;
       const fare = parsed.data.feeAmount ?? Number(route?.fee || 0);
-      return tx.transportAssignment.create({ data: {
+      const saved = await tx.transportAssignment.create({ data: {
         schoolId: school.id, studentRecordId: student.id, vehicleId: vehicle.id, routeId: parsed.data.routeId || vehicle.routeId || null,
         assignedById: req.user.id, feeAmount: new Prisma.Decimal(fare), billingCycle: parsed.data.billingCycle,
         activeKey: `student:${student.id}`
       }, include: { studentRecord: { select: { id: true, title: true, data: true } }, vehicle: true, route: true } });
+      await tx.auditLog.create({ data: { userId: req.user.id, action: 'ASSIGN_STUDENT_TRANSPORT', entity: 'TransportAssignment', entityId: saved.id, details: { admissionNumber, vehicleId: vehicle.id, feeAmount: Number(saved.feeAmount) } } });
+      return saved;
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
-    await prisma.auditLog.create({ data: { userId: req.user.id, action: 'ASSIGN_STUDENT_TRANSPORT', entity: 'TransportAssignment', entityId: assignment.id, details: { admissionNumber, vehicleId: vehicle.id, feeAmount: Number(assignment.feeAmount) } } });
     res.status(201).json({ assignment });
   } catch (error) { res.status(error.code === 'P2002' ? 409 : error.status || 500).json({ message: error.code === 'P2002' ? 'The student already has an active transport assignment.' : error.message || 'Transport assignment could not be saved.' }); }
 });
@@ -109,8 +116,11 @@ router.post('/assignments/:id/end', async (req, res) => {
     const assignment = await prisma.transportAssignment.findUnique({ where: { id: req.params.id } });
     if (!assignment) return res.status(404).json({ message: 'Transport assignment not found.' });
     if (assignment.status !== 'ACTIVE') return res.status(409).json({ message: 'This transport assignment has already ended.' });
-    const updated = await prisma.transportAssignment.update({ where: { id: assignment.id }, data: { status: 'ENDED', endedAt: new Date(), activeKey: null } });
-    await prisma.auditLog.create({ data: { userId: req.user.id, action: 'END_STUDENT_TRANSPORT', entity: 'TransportAssignment', entityId: assignment.id } });
+    const updated = await prisma.$transaction(async (tx) => {
+      const saved = await tx.transportAssignment.update({ where: { id: assignment.id }, data: { status: 'ENDED', endedAt: new Date(), activeKey: null } });
+      await tx.auditLog.create({ data: { userId: req.user.id, action: 'END_STUDENT_TRANSPORT', entity: 'TransportAssignment', entityId: assignment.id } });
+      return saved;
+    });
     res.json({ assignment: updated });
   } catch (error) { res.status(error.status || 500).json({ message: error.message || 'Assignment could not be ended.' }); }
 });

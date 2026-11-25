@@ -107,7 +107,25 @@ router.post('/:id/verify',async(req,res)=>{
     }
     if(payment.channel==='CASH'&&!parsed.data.verificationNote&&!payment.transactionCode)issues.push('Add the cash receipt or counting note.');
     if(transactionCode){const duplicate=await prisma.paymentTransaction.findFirst({where:{schoolId:school.id,channel:payment.channel,transactionCode,id:{not:payment.id}}});if(duplicate)issues.push(`Transaction code ${transactionCode} is already used by another ${payment.channel} payment.`);}let matchedBankTransaction=null;if(statementReference||transactionCode){const refs=[...new Set([statementReference,transactionCode].filter(Boolean))];matchedBankTransaction=await prisma.bankTransaction.findFirst({where:{schoolId:school.id,OR:refs.flatMap(reference=>[{reference},{externalId:reference}])}});if(matchedBankTransaction){const bankAmount=payment.item?Number(payment.cashAmount):Number(payment.amount);if(Math.abs(Number(matchedBankTransaction.amount)-bankAmount)>0.01)issues.push(`Imported bank amount ${Number(matchedBankTransaction.amount).toFixed(2)} does not match the payment cash/bank amount ${bankAmount.toFixed(2)}.`);if(matchedBankTransaction.admissionNumber&&String(matchedBankTransaction.admissionNumber).trim().toUpperCase()!==payment.admissionNumber)issues.push('Imported bank statement admission number does not match the selected student.');if(matchedBankTransaction.journalEntryId)issues.push('This bank statement row has already been posted; review it in Bank reconciliation before verifying again.');}}
-    if(issues.length){const reason=issues.join(' ');const saved=await prisma.paymentTransaction.update({where:{id:payment.id},data:{status:issues.some(issue=>issue.includes('does not match')||issue.includes('already used'))?'UNBALANCED':'CONCERN',concern:reason,transactionCode,...(statementReference?{statementReference}:{}),...(parsed.data.statementAmount!==undefined?{statementAmount:new Prisma.Decimal(parsed.data.statementAmount)}:{}),...(parsed.data.verifiedQuantity!==undefined?{verifiedQuantity:new Prisma.Decimal(parsed.data.verifiedQuantity)}:{}),...(explanation?{explanation}:{}),...(parsed.data.verificationNote?{verificationNote:parsed.data.verificationNote}:{})}});if(payment.paymentRecordId)await prisma.moduleRecord.update({where:{id:payment.paymentRecordId},data:{data:{...(payment.paymentRecord?.data||{}),'Transaction code':transactionCode||'','Verification status':saved.status,Status:'FOLLOW-UP REQUIRED'}}});await notifyPaymentConcern({schoolId:school.id,paymentId:payment.id,channel:payment.channel,transactionCode,reason,createdById:req.user.id,title:'Payment mismatch needs follow-up'});await prisma.auditLog.create({data:{userId:req.user.id,action:'FLAG_PAYMENT_MISMATCH',entity:'PaymentTransaction',entityId:payment.id,details:{status:saved.status,issues}}});return res.status(409).json({message:reason,payment:saved});}
+    if (issues.length) {
+      const reason = issues.join(' ');
+      const status = issues.some((issue) => issue.includes('does not match') || issue.includes('already used')) ? 'UNBALANCED' : 'CONCERN';
+      const saved = await prisma.$transaction(async (tx) => {
+        const updatedPayment = await tx.paymentTransaction.update({ where: { id: payment.id }, data: {
+          status, concern: reason, transactionCode,
+          ...(statementReference ? { statementReference } : {}),
+          ...(parsed.data.statementAmount !== undefined ? { statementAmount: new Prisma.Decimal(parsed.data.statementAmount) } : {}),
+          ...(parsed.data.verifiedQuantity !== undefined ? { verifiedQuantity: new Prisma.Decimal(parsed.data.verifiedQuantity) } : {}),
+          ...(explanation ? { explanation } : {}),
+          ...(parsed.data.verificationNote ? { verificationNote: parsed.data.verificationNote } : {})
+        } });
+        if (payment.paymentRecordId) await tx.moduleRecord.update({ where: { id: payment.paymentRecordId }, data: { data: { ...(payment.paymentRecord?.data || {}), 'Transaction code': transactionCode || '', 'Verification status': updatedPayment.status, Status: 'FOLLOW-UP REQUIRED' } } });
+        await notifyPaymentConcern({ db: tx, schoolId: school.id, paymentId: payment.id, channel: payment.channel, transactionCode, reason, createdById: req.user.id, title: 'Payment mismatch needs follow-up' });
+        await tx.auditLog.create({ data: { userId: req.user.id, action: 'FLAG_PAYMENT_MISMATCH', entity: 'PaymentTransaction', entityId: payment.id, details: { status: updatedPayment.status, issues } } });
+        return updatedPayment;
+      });
+      return res.status(409).json({ message: reason, payment: saved });
+    }
 
     const result=await prisma.$transaction(async tx=>{
       let journal=null;const amount=Number(payment.amount),cashAmount=payment.item?Number(payment.cashAmount):amount;
@@ -132,11 +150,21 @@ router.post('/:id/verify',async(req,res)=>{
   }catch(error){if(error.code==='P2002')return res.status(409).json({message:'That payment reference has already been recorded. The existing payment remains unchanged.'});handleError(res,error);}
 });
 
-router.post('/in-kind/pledges',async(req,res)=>{
-  const parsed=z.object({schoolId:z.string().optional(),studentRecordId:z.string().min(1),item:z.enum(IN_KIND_ITEMS),quantity:z.number().positive(),unit:z.string().trim().min(1).max(20),unitValue:z.number().nonnegative().optional(),expectedAt:z.string().datetime().optional(),notes:z.string().trim().max(1000).optional()}).safeParse(req.body);
-  if(!parsed.success)return res.status(400).json({message:'Select a student, item, valid expected quantity, and standard unit.'});
-  if(!itemUnitValid(parsed.data.item,parsed.data.unit.toUpperCase()))return res.status(400).json({message:`${parsed.data.item.replace('_',' ')} unit must be ${ITEM_UNITS[parsed.data.item].join(' or ')}.`});
-  try{const school=await paymentSchool(req,parsed.data.schoolId);const student=await prisma.moduleRecord.findFirst({where:{id:parsed.data.studentRecordId,module:'students'}});if(!student)return res.status(404).json({message:'Student not found.'});const pledge=await prisma.inKindPledge.create({data:{schoolId:school.id,studentRecordId:student.id,createdById:req.user.id,admissionNumber:String(student.data?.['Admission number']||'').toUpperCase(),className:String(student.data?.Class||'').toUpperCase(),item:parsed.data.item,quantity:new Prisma.Decimal(parsed.data.quantity),unit:parsed.data.unit.toUpperCase(),unitValue:parsed.data.unitValue!==undefined?new Prisma.Decimal(parsed.data.unitValue):null,expectedAt:parsed.data.expectedAt?new Date(parsed.data.expectedAt):null,notes:parsed.data.notes||null}});await prisma.auditLog.create({data:{userId:req.user.id,action:'CREATE_IN_KIND_PLEDGE',entity:'InKindPledge',entityId:pledge.id,details:{item:pledge.item,quantity:Number(pledge.quantity),unit:pledge.unit,admissionNumber:pledge.admissionNumber}}});res.status(201).json({pledge});}catch(error){handleError(res,error);}
+router.post('/in-kind/pledges', async (req, res) => {
+  const parsed = z.object({ schoolId: z.string().optional(), studentRecordId: z.string().min(1), item: z.enum(IN_KIND_ITEMS), quantity: z.number().positive(), unit: z.string().trim().min(1).max(20), unitValue: z.number().nonnegative().optional(), expectedAt: z.string().datetime().optional(), notes: z.string().trim().max(1000).optional() }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ message: 'Select a student, item, valid expected quantity, and standard unit.' });
+  if (!itemUnitValid(parsed.data.item, parsed.data.unit.toUpperCase())) return res.status(400).json({ message: parsed.data.item.replace('_',' ') + ' unit must be ' + ITEM_UNITS[parsed.data.item].join(' or ') + '.' });
+  try {
+    const school = await paymentSchool(req, parsed.data.schoolId);
+    const student = await prisma.moduleRecord.findFirst({ where: { id: parsed.data.studentRecordId, module: 'students' } });
+    if (!student) return res.status(404).json({ message: 'Student not found.' });
+    const pledge = await prisma.$transaction(async (tx) => {
+      const saved = await tx.inKindPledge.create({ data: { schoolId: school.id, studentRecordId: student.id, createdById: req.user.id, admissionNumber: String(student.data?.['Admission number'] || '').toUpperCase(), className: String(student.data?.Class || '').toUpperCase(), item: parsed.data.item, quantity: new Prisma.Decimal(parsed.data.quantity), unit: parsed.data.unit.toUpperCase(), unitValue: parsed.data.unitValue !== undefined ? new Prisma.Decimal(parsed.data.unitValue) : null, expectedAt: parsed.data.expectedAt ? new Date(parsed.data.expectedAt) : null, notes: parsed.data.notes || null } });
+      await tx.auditLog.create({ data: { userId: req.user.id, action: 'CREATE_IN_KIND_PLEDGE', entity: 'InKindPledge', entityId: saved.id, details: { item: saved.item, quantity: Number(saved.quantity), unit: saved.unit, admissionNumber: saved.admissionNumber } } });
+      return saved;
+    });
+    res.status(201).json({ pledge });
+  } catch (error) { handleError(res, error); }
 });
 
 router.get('/in-kind/balances',async(req,res)=>{

@@ -39,6 +39,8 @@ Set `OLLAMA_URL` and `OLLAMA_MODEL` in `server/.env` to use a local Ollama model
 - npm 10+
 - Docker Desktop (recommended for PostgreSQL) or an existing PostgreSQL 15+ server
 
+The API and browser client are installed separately. The root `package.json` provides convenience commands only and does not add another runtime or change the existing app structure.
+
 ## 1. Start PostgreSQL
 
 From the project root:
@@ -54,7 +56,7 @@ cd server
 cp .env.example .env
 npm install
 npx prisma generate
-npx prisma migrate dev --name init
+npx prisma migrate deploy
 npm run seed
 npm run dev
 ```
@@ -80,6 +82,8 @@ npm run dev
 
 Open `http://localhost:5173` (or the alternate port Vite prints if 5173 is already in use).
 
+Set `VITE_API_URL` in `client/.env` if the API is hosted at a different URL. Set `CLIENT_ORIGIN` in `server/.env` to the exact browser origin; separate multiple origins with commas. Development permits local Vite ports, while production uses only the configured allowlist.
+
 ### Local data and email
 
 The checked-out development instance uses PostgreSQL on port `5433` and stores its database files in `server/.data/`. This local data directory is ignored by Git. For another machine, use Docker Compose or a PostgreSQL server and set `DATABASE_URL` to that server.
@@ -104,6 +108,10 @@ Newsletter email requires `SMTP_URL` and `MAIL_FROM` in `server/.env`. Configure
 - `server/` Express API and Prisma database
 - `docker-compose.yml` local PostgreSQL
 - `docs/` implementation roadmap and role/module matrix
+
+## System architecture
+
+The browser app is React and Vite in `client/`. It calls the Express API in `server/` over authenticated JSON routes. Express validates requests, checks JWT roles, and uses Prisma to store records in PostgreSQL. Most flexible school registers use the existing module-record model; payments, bank reconciliation, accounting journals, transport assignments, salaries, photos, assets, and audit history use dedicated relational models. The server owns secrets and provider calls; the browser never receives the AI or payment provider credentials.
 
 ## API overview
 
@@ -137,3 +145,55 @@ Receipts can be printed on A4 or 58 mm / 80 mm thermal paper. They include the s
 ## Important
 
 Do not load real pupil or financial data until the school has approved the deployment, access model, backups, privacy notice, data retention policy and operational procedures.
+
+## Operations, checks, and assistant behavior
+
+### Persistence and transactions
+
+PostgreSQL is the system of record. Student and module records, roles, linked student accounts, student photos, school artwork, payment verification, accounting entries, transport assignments, salaries, newsletters, report-card drafts, alerts, and audit history persist there. The `server/.data/` folder is only used by the local Docker database container; it is not a second application database.
+
+Core module records, student photos and logins, school artwork, transport assignments, staged-payment concerns, and accounting journals commit together with their audit entries. Verified payments, their ledger journals, student balances, in-kind movements, and bank reconciliation state also commit together. Legacy fee/payment/expense records are saved before the separate ledger posting attempt; if posting fails, the record stays saved and an Administration/Bursar alert explains that it needs review.
+
+Run existing migrations in an environment with `DATABASE_URL` configured:
+
+```bash
+cd server
+npx prisma migrate deploy
+npx prisma generate
+```
+
+Use `npx prisma migrate dev --name describe_change` only when creating a new development migration. Back up PostgreSQL before applying migrations to a live school database.
+
+### Health endpoint and app checks
+
+`GET /api/health` checks the API process and performs a database query. A healthy response is HTTP 200 with `{"status":"ok","service":"Nest Ziwa API","database":"connected"}`. If PostgreSQL cannot be reached it returns HTTP 503. It does not expose database credentials or student information.
+
+From the project root, run the deployment checks:
+
+```bash
+npm run build:check
+```
+
+This builds the Vite client, checks backend JavaScript syntax, and validates the Prisma schema without connecting to the database. To run the end-to-end API/database suite:
+
+```bash
+npm run test:all
+```
+
+The integration suite applies the committed Prisma migrations to a newly created random PostgreSQL schema, starts a separate test API and mock AI endpoint, exercises authenticated modules and integrations, then drops the test schema. It never uses the `public` schema. For safety, the configured `DATABASE_URL` must point to loopback; to use a disposable non-loopback test server, set `TEST_DATABASE_URL` explicitly. Do not point that variable at a production or school data database. The suite needs PostgreSQL, dependencies installed in `server/` and `client/`, and the Prisma client generated. It does not call paid AI or payment providers.
+
+### Floating assistant
+
+The floating assistant appears in the authenticated app shell. It is read-only and shows whether it is using **Online AI** or **Offline Built-In Mode**. When the API is reachable, permitted fee, in-kind, transport, academic, and bank follow-up questions are answered by local role-filtered database lookups. Student and parent lookups are limited to the student's own linked records. Assistant activity is audit logged.
+
+For ordinary help and document drafts, the server can use a configured OpenAI-compatible endpoint (`AI_API_KEY`, `AI_API_BASE_URL`, and `AI_MODEL`), then local Ollama (`OLLAMA_URL` and `OLLAMA_MODEL`), then built-in guidance/templates. School database rows are not included in external AI prompts. With the API unreachable, the browser shows built-in module guidance; database lookups require the authenticated API and database to be online. A model answer is a draft for staff review, never a database update.
+
+### Environment file reference
+
+Copy `server/.env.example` to `server/.env` and replace placeholders before starting the API. Core production values are `DATABASE_URL`, `JWT_SECRET` (at least 32 unpredictable characters), `PORT`, `NODE_ENV=production`, and `CLIENT_ORIGIN`. Configure `SMTP_URL` and `MAIL_FROM` only if authorized staff should send newsletters/report cards. Assistant values, bank webhooks, and payment/salary sandbox settings are optional. Provider credential placeholders do not activate real payment integrations; the included payment driver is a simulation unless a real provider adapter is separately implemented and verified.
+
+Never commit `.env` files, real student records, provider secrets, signing keys, or database backups. In production, terminate HTTPS at the approved reverse proxy/platform, restrict database network access, configure encrypted backups, and rotate seed credentials and secrets before opening the system to users.
+
+### Payment provider transition
+
+The supported development driver is `PAYMENT_GATEWAY_DRIVER=mock_sandbox`. It creates clearly simulated prompts and salary confirmations without contacting a provider or moving money. The M-Pesa and Airtel environment variables in the template are placeholders; setting provider credentials or changing the driver alone does not enable live payment calls. Before live use, implement and review the provider adapter, signed callback verification, reference/idempotency rules, reversal and reconciliation handling, and provider sandbox cases. Then configure the approved production driver and secrets on the server only, set webhook secrets, deploy over HTTPS, and verify real statement matching before posting receipts. Keep the sandbox confirmation routes disabled in production as they are now.

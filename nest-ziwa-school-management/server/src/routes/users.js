@@ -25,8 +25,11 @@ router.post('/', async (req, res) => {
   if (!parsed.success) return res.status(400).json({ message: 'Enter a name, valid email, and staff role.' });
   if (await prisma.user.findUnique({ where: { email: parsed.data.email } })) return res.status(409).json({ message: 'An account already uses that email address.' });
   const temporaryPassword = randomBytes(12).toString('base64url');
-  const user = await prisma.user.create({ data: { ...parsed.data, name: parsed.data.name.toUpperCase(), passwordHash: await bcrypt.hash(temporaryPassword, 12), mustChangePassword: true } });
-  await prisma.auditLog.create({ data: { userId: req.user.id, action: 'CREATE_USER', entity: 'User', entityId: user.id } });
+  const user = await prisma.$transaction(async (tx) => {
+    const created = await tx.user.create({ data: { ...parsed.data, name: parsed.data.name.toUpperCase(), passwordHash: await bcrypt.hash(temporaryPassword, 12), mustChangePassword: true } });
+    await tx.auditLog.create({ data: { userId: req.user.id, action: 'CREATE_USER', entity: 'User', entityId: created.id } });
+    return created;
+  });
   res.status(201).json({ user: { id: user.id, name: user.name, email: user.email, role: user.role, isActive: user.isActive, mustChangePassword: true }, temporaryPassword });
 });
 

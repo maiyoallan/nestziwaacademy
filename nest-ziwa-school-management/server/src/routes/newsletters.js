@@ -36,12 +36,18 @@ router.post('/drafts', async (req, res) => {
   if (parsed.data.id) {
     const existing = await prisma.moduleRecord.findFirst({ where: { id: parsed.data.id, module: 'communications' } });
     if (!existing?.data?.['Newsletter HTML']) return res.status(404).json({ message: 'Newsletter draft not found.' });
-    const draft = await prisma.moduleRecord.update({ where: { id: existing.id }, data: { title: `NEWSLETTER: ${parsed.data.subject}`, data } });
-    await prisma.auditLog.create({ data: { userId: req.user.id, action: 'UPDATE', entity: 'Newsletter', entityId: draft.id } });
+    const draft = await prisma.$transaction(async (tx) => {
+      const saved = await tx.moduleRecord.update({ where: { id: existing.id }, data: { title: `NEWSLETTER: ${parsed.data.subject}`, data } });
+      await tx.auditLog.create({ data: { userId: req.user.id, action: 'UPDATE', entity: 'Newsletter', entityId: saved.id } });
+      return saved;
+    });
     return res.json({ draft: { id: draft.id, subject: parsed.data.subject, html: draft.data['Newsletter HTML'], updatedAt: draft.updatedAt } });
   }
-  const draft = await prisma.moduleRecord.create({ data: { module: 'communications', title: `NEWSLETTER: ${parsed.data.subject}`, data, createdById: req.user.id } });
-  await prisma.auditLog.create({ data: { userId: req.user.id, action: 'CREATE', entity: 'Newsletter', entityId: draft.id } });
+  const draft = await prisma.$transaction(async (tx) => {
+    const created = await tx.moduleRecord.create({ data: { module: 'communications', title: `NEWSLETTER: ${parsed.data.subject}`, data, createdById: req.user.id } });
+    await tx.auditLog.create({ data: { userId: req.user.id, action: 'CREATE', entity: 'Newsletter', entityId: created.id } });
+    return created;
+  });
   res.status(201).json({ draft: { id: draft.id, subject: parsed.data.subject, html: draft.data['Newsletter HTML'], updatedAt: draft.updatedAt } });
 });
 

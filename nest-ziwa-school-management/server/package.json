@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "nodemon src/index.js",
     "start": "node src/index.js",
+    "check": "node scripts/check.js",
     "prisma:generate": "prisma generate",
     "migrate": "prisma migrate dev",
     "seed": "node prisma/seed.js"

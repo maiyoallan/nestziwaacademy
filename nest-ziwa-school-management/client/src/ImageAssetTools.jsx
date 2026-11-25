@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Download, ImagePlus, PenTool, Upload } from 'lucide-react';
+import { cleanSignaturePixels } from './imageProcessing.js';
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 
@@ -31,22 +32,13 @@ async function extractSignature(file) {
   const context = canvas.getContext('2d', { willReadFrequently: true });
   context.drawImage(image, 0, 0, canvas.width, canvas.height);
   const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
-  let left = canvas.width, top = canvas.height, right = -1, bottom = -1;
-  for (let i = 0; i < pixels.data.length; i += 4) {
-    const brightness = (pixels.data[i] * 0.299) + (pixels.data[i + 1] * 0.587) + (pixels.data[i + 2] * 0.114);
-    const alpha = Math.max(0, Math.min(255, Math.round((238 - brightness) * 2.2)));
-    pixels.data[i] = 28; pixels.data[i + 1] = 35; pixels.data[i + 2] = 62; pixels.data[i + 3] = alpha;
-    if (alpha > 24) {
-      const pixel = i / 4, x = pixel % canvas.width, y = Math.floor(pixel / canvas.width);
-      left = Math.min(left, x); right = Math.max(right, x); top = Math.min(top, y); bottom = Math.max(bottom, y);
-    }
-  }
-  if (right < left || bottom < top) throw new Error('No dark handwritten marks were found. Use a clear photo or scan of the signature.');
+  const { pixels: cleanedPixels, bounds } = cleanSignaturePixels(pixels.data, canvas.width, canvas.height);
+  pixels.data.set(cleanedPixels);
   context.putImageData(pixels, 0, 0);
   const padding = 20;
   const crop = document.createElement('canvas');
-  const cropLeft = Math.max(0, left - padding), cropTop = Math.max(0, top - padding);
-  const cropRight = Math.min(canvas.width, right + padding + 1), cropBottom = Math.min(canvas.height, bottom + padding + 1);
+  const cropLeft = Math.max(0, bounds.left - padding), cropTop = Math.max(0, bounds.top - padding);
+  const cropRight = Math.min(canvas.width, bounds.right + padding + 1), cropBottom = Math.min(canvas.height, bounds.bottom + padding + 1);
   crop.width = cropRight - cropLeft; crop.height = cropBottom - cropTop;
   crop.getContext('2d').drawImage(canvas, cropLeft, cropTop, crop.width, crop.height, 0, 0, crop.width, crop.height);
   const dataUrl = crop.toDataURL('image/png');

@@ -63,18 +63,24 @@ router.post('/students/:recordId/student-account', async (req, res) => {
     if (recordLink.user.email === email) return res.json({ email, linked: true, temporaryPassword: null, mustChangePassword: recordLink.user.mustChangePassword });
     return res.status(409).json({ message: 'This student record is already linked to another login.' });
   }
-  let account = await prisma.user.findUnique({ where: { email } });
-  let temporaryPassword = null;
-  if (account && account.role !== 'STUDENT') return res.status(409).json({ message: 'That email belongs to a non-student account.' });
-  if (!account) {
-    temporaryPassword = randomBytes(12).toString('base64url');
-    account = await prisma.user.create({ data: { name: String(record.data?.['Full name'] || record.title).toUpperCase(), email, role: 'STUDENT', passwordHash: await bcrypt.hash(temporaryPassword, 12), mustChangePassword: true } });
-  }
-  const existingLink = await prisma.studentAccount.findUnique({ where: { userId: account.id } });
-  if (existingLink && existingLink.recordId !== record.id) return res.status(409).json({ message: 'This student login is already linked to another student.' });
-  if (!existingLink) await prisma.studentAccount.create({ data: { userId: account.id, recordId: record.id } });
-  await prisma.auditLog.create({ data: { userId: req.user.id, action: 'LINK_STUDENT_ACCOUNT', entity: 'students', entityId: record.id } });
-  res.status(existingLink ? 200 : 201).json({ email, linked: true, temporaryPassword, mustChangePassword: Boolean(temporaryPassword) });
+  const temporaryPassword = randomBytes(12).toString('base64url');
+  const passwordHash = await bcrypt.hash(temporaryPassword, 12);
+  const result = await prisma.$transaction(async (tx) => {
+    let account = await tx.user.findUnique({ where: { email } });
+    let issuedPassword = null;
+    if (account && account.role !== 'STUDENT') return { conflict: 'That email belongs to a non-student account.' };
+    if (!account) {
+      issuedPassword = temporaryPassword;
+      account = await tx.user.create({ data: { name: String(record.data?.['Full name'] || record.title).toUpperCase(), email, role: 'STUDENT', passwordHash, mustChangePassword: true } });
+    }
+    const existingLink = await tx.studentAccount.findUnique({ where: { userId: account.id } });
+    if (existingLink && existingLink.recordId !== record.id) return { conflict: 'This student login is already linked to another student.' };
+    if (!existingLink) await tx.studentAccount.create({ data: { userId: account.id, recordId: record.id } });
+    if (!existingLink) await tx.auditLog.create({ data: { userId: req.user.id, action: 'LINK_STUDENT_ACCOUNT', entity: 'students', entityId: record.id } });
+    return { existingLink, issuedPassword, mustChangePassword: account.mustChangePassword };
+  });
+  if (result.conflict) return res.status(409).json({ message: result.conflict });
+  res.status(result.existingLink ? 200 : 201).json({ email, linked: true, temporaryPassword: result.issuedPassword, mustChangePassword: Boolean(result.issuedPassword) || result.mustChangePassword });
 });
 
 router.post('/students/:recordId/photo', async (req, res) => {
@@ -89,12 +95,15 @@ router.post('/students/:recordId/photo', async (req, res) => {
   if (!record) return res.status(404).json({ message: 'Student record not found.' });
   const bytes = Buffer.from(parsed.data.dataBase64, 'base64');
   if (!bytes.length || bytes.length > 3 * 1024 * 1024) return res.status(400).json({ message: 'Student photos must be smaller than 3 MB.' });
-  const photo = await prisma.studentPhoto.upsert({
-    where: { recordId: record.id },
-    create: { recordId: record.id, fileName: parsed.data.fileName.replace(/[\\/]/g, '_'), mimeType: parsed.data.mimeType, data: bytes },
-    update: { fileName: parsed.data.fileName.replace(/[\\/]/g, '_'), mimeType: parsed.data.mimeType, data: bytes }
+  const photo = await prisma.$transaction(async (tx) => {
+    const saved = await tx.studentPhoto.upsert({
+      where: { recordId: record.id },
+      create: { recordId: record.id, fileName: parsed.data.fileName.replace(/[\\/]/g, '_'), mimeType: parsed.data.mimeType, data: bytes },
+      update: { fileName: parsed.data.fileName.replace(/[\\/]/g, '_'), mimeType: parsed.data.mimeType, data: bytes }
+    });
+    await tx.auditLog.create({ data: { userId: req.user.id, action: 'UPLOAD_STUDENT_PHOTO', entity: 'students', entityId: record.id, details: { fileName: saved.fileName } } });
+    return saved;
   });
-  await prisma.auditLog.create({ data: { userId: req.user.id, action: 'UPLOAD_STUDENT_PHOTO', entity: 'students', entityId: record.id, details: { fileName: photo.fileName } } });
   res.json({ photoUrl: `/api/records/students/${record.id}/photo?v=${photo.updatedAt.getTime()}` });
 });
 
@@ -204,8 +213,11 @@ router.post('/:module', async (req, res) => {
     if (result.duplicate) return res.status(409).json({ message: `Admission number ${getAdmissionNumber(parsed.data.data)} is already in use. The next available number is ${result.nextAdmissionNumber}.`, nextAdmissionNumber: result.nextAdmissionNumber });
     row = result.row;
   } else {
-    row = await prisma.moduleRecord.create({ data: { module: req.params.module, ...parsed.data, createdById: req.user.id } });
-    await prisma.auditLog.create({ data: { userId: req.user.id, action: 'CREATE', entity: req.params.module, entityId: row.id, details:{title:row.title,fields:Object.keys(row.data||{})} } });
+    row = await prisma.$transaction(async (tx) => {
+      const created = await tx.moduleRecord.create({ data: { module: req.params.module, ...parsed.data, createdById: req.user.id } });
+      await tx.auditLog.create({ data: { userId: req.user.id, action: 'CREATE', entity: req.params.module, entityId: created.id, details:{title:created.title,fields:Object.keys(created.data||{})} } });
+      return created;
+    });
   }
   let accounting=null;
   if(['fees','payments','expenses'].includes(req.params.module)){
@@ -247,8 +259,11 @@ router.patch('/:module/:id', async (req, res) => {
     if (result.duplicate) return res.status(409).json({ message: `Admission number ${getAdmissionNumber(parsed.data.data)} is already in use.` });
     row = result.row;
   } else {
-    row = await prisma.moduleRecord.update({ where: { id: existing.id }, data: parsed.data });
-    await prisma.auditLog.create({ data: { userId: req.user.id, action: 'UPDATE', entity: req.params.module, entityId: row.id, details:{fields:Object.keys(parsed.data.data||{}),titleChanged:Boolean(parsed.data.title)} } });
+    row = await prisma.$transaction(async (tx) => {
+      const updated = await tx.moduleRecord.update({ where: { id: existing.id }, data: parsed.data });
+      await tx.auditLog.create({ data: { userId: req.user.id, action: 'UPDATE', entity: req.params.module, entityId: updated.id, details:{fields:Object.keys(parsed.data.data||{}),titleChanged:Boolean(parsed.data.title)} } });
+      return updated;
+    });
   }
   let accounting=null;
   if(['fees','payments','expenses'].includes(req.params.module)){
@@ -268,8 +283,10 @@ router.delete('/:module/:id', async (req, res) => {
     const posted=await findPostedFinancialJournal(existing,req.params.module);
     if(posted)return res.status(409).json({message:`This transaction is posted as journal ${posted.entryNumber}. Reverse the journal before attempting a correction.`});
   }
-  await prisma.moduleRecord.delete({ where: { id: existing.id } });
-  await prisma.auditLog.create({ data: { userId: req.user.id, action: 'DELETE', entity: req.params.module, entityId: existing.id, details:{title:existing.title,fields:Object.keys(existing.data||{})} } });
+  await prisma.$transaction(async (tx) => {
+    await tx.moduleRecord.delete({ where: { id: existing.id } });
+    await tx.auditLog.create({ data: { userId: req.user.id, action: 'DELETE', entity: req.params.module, entityId: existing.id, details:{title:existing.title,fields:Object.keys(existing.data||{})} } });
+  });
   res.json({ message: 'Record deleted.' });
 });
 export default router;

@@ -14,14 +14,12 @@ const contactKeys = data => [
   data?.['Phone number'] ? `p:${String(data['Phone number']).replace(/\D/g,'')}` : '',
   data?.['WhatsApp number'] ? `p:${String(data['WhatsApp number']).replace(/\D/g,'')}` : ''
 ].filter(key => key.length > 2);
-
 async function parentAdmissions(user) {
   const email = String(user.email || '').trim().toLowerCase();
   if (!email) return [];
   const guardians = await prisma.moduleRecord.findMany({ where: { module: 'guardians' }, select: { data: true } });
   const linked = guardians.filter(row => String(row.data?.Email || '').trim().toLowerCase() === email);
-  const keys = new Set(linked.flatMap(row => contactKeys(row.data || {})));
-  return [...new Set(guardians.filter(row => linked.includes(row) || contactKeys(row.data || {}).some(key => keys.has(key))).flatMap(guardianAdmission))];
+  return [...new Set(linked.flatMap(guardianAdmission))];
 }
 
 async function canReadStudent(req, record) {
@@ -80,7 +78,7 @@ async function financialSummary(record, schoolId) {
   };
 }
 
-async function buildHub(record, schoolId) {
+async function buildHub(record, schoolId, viewer) {
   const admissionNumber = admissionOf(record);
   const [photo, guardians, exams, financial] = await Promise.all([
     prisma.studentPhoto.findUnique({ where: { recordId: record.id }, select: { updatedAt: true } }),
@@ -89,9 +87,16 @@ async function buildHub(record, schoolId) {
     financialSummary(record, schoolId)
   ]);
   const linkedGuardians = guardians.filter(row => guardianAdmission(row).includes(admissionNumber));
-  const currentKeys = new Set(linkedGuardians.flatMap(row => contactKeys(row.data || {})));
   const siblingAdmissions = new Set(linkedGuardians.flatMap(guardianAdmission));
-  if (currentKeys.size) for (const guardian of guardians) if (contactKeys(guardian.data || {}).some(key => currentKeys.has(key))) guardianAdmission(guardian).forEach(value => siblingAdmissions.add(value));
+  if (viewer?.role === 'PARENT') {
+    const email = String(viewer.email || '').trim().toLowerCase();
+    siblingAdmissions.clear();
+    guardians.filter(row => String(row.data?.Email || '').trim().toLowerCase() === email).flatMap(guardianAdmission).forEach(value => siblingAdmissions.add(value));
+  } else if (viewer?.role === 'STUDENT') siblingAdmissions.clear();
+  else {
+    const currentKeys = new Set(linkedGuardians.flatMap(row => contactKeys(row.data || {})));
+    if (currentKeys.size) for (const guardian of guardians) if (contactKeys(guardian.data || {}).some(key => currentKeys.has(key))) guardianAdmission(guardian).forEach(value => siblingAdmissions.add(value));
+  }
   siblingAdmissions.delete(admissionNumber);
   const studentRows = siblingAdmissions.size ? await prisma.moduleRecord.findMany({ where: { module: 'students' }, select: { id: true, title: true, data: true } }) : [];
   const siblings = studentRows.filter(row => siblingAdmissions.has(admissionOf(row))).map(row => ({ id: row.id, title: row.title, data: row.data }));
@@ -111,7 +116,7 @@ router.get('/children', async (req, res) => {
     if (!admissions.length) return res.json({ children: [], message: 'No student records are linked to this login email. Contact the school office to update the parent email on the guardian record.' });
     const records = await prisma.moduleRecord.findMany({ where: { module: 'students' }, orderBy: { updatedAt: 'desc' } });
     const school = await ensureSchoolAndChart();
-    const children = await Promise.all(records.filter(record => admissions.includes(admissionOf(record))).map(record => buildHub(record, school.id)));
+    const children = await Promise.all(records.filter(record => admissions.includes(admissionOf(record))).map(record => buildHub(record, school.id, req.user)));
     res.json({ children });
   } catch (error) { res.status(error.status || 500).json({ message: error.message || 'Parent child records could not be loaded.' }); }
 });
@@ -142,7 +147,7 @@ router.get('/:recordId', async (req, res) => {
     if (!record) return res.status(404).json({ message: 'Student record not found.' });
     if (!await canReadStudent(req, record)) return res.status(403).json({ message: 'You can only view a child linked to your account.' });
     const school = await ensureSchoolAndChart();
-    const hub = await buildHub(record, school.id);
+    const hub = await buildHub(record, school.id, req.user);
     if (req.user.role === 'STUDENT') hub.siblings = [];
     res.json({ hub });
   } catch (error) { res.status(error.status || 500).json({ message: error.message || 'Student hub could not be loaded.' }); }

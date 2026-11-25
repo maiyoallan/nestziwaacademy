@@ -8,6 +8,7 @@ import ReportCardStudio from './ReportCardStudio.jsx';
 import FinanceWorkbench from './FinanceWorkbench.jsx';
 import AlertCenter from './AlertCenter.jsx';
 import AssistantPanel from './AssistantPanel.jsx';
+import FloatingAssistant from './FloatingAssistant.jsx';
 import DirectorWorkspace from './DirectorWorkspace.jsx';
 import StudentIDStudio from './StudentIDStudio.jsx';
 import SearchableStudentSelect from './SearchableStudentSelect.jsx';
@@ -260,6 +261,7 @@ function App(){
    {studentProfile&&<StudentProfilePanel record={studentProfile} token={token} user={user} request={request} onClose={()=>setStudentProfile(null)} onEdit={!['BURSAR','STUDENT'].includes(user.role)?()=>{editRecord(studentProfile);setStudentProfile(null);}:undefined} onReportCard={['SYSTEM_ADMIN','HEADTEACHER','EXAM_OFFICER','TEACHER'].includes(user.role)?()=>{setReportCardStudentId(studentProfile.id);setStudentProfile(null);setActive('reportcards');}:undefined} onIdCard={['SYSTEM_ADMIN','HEADTEACHER','ADMISSIONS','TEACHER'].includes(user.role)?()=>{setIdCardStudentId(studentProfile.id);setStudentProfile(null);setActive('idcards');}:undefined} onOpenFinance={['SYSTEM_ADMIN','HEADTEACHER','BURSAR'].includes(user.role)?()=>{setStudentProfile(null);setActive('payments');}:undefined} onOpenSibling={sibling=>setStudentProfile(sibling)} logoSrc={logoSrc}/>}
     </section>
   </main>
+  <FloatingAssistant request={request} user={user} module={active}/>
  </div>;
 }
 function Login({onLogin,logoSrc}){
